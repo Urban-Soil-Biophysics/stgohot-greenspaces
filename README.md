@@ -35,16 +35,16 @@ Urban heat islands (UHI) raise air and soil temperatures in cities, despite soil
 
 ### **Data Sources**
 
--   **Google Earth Engine (GEE)**: For satellite imagery (Landsat and Sentinel).\
--   **Agrometeorologia INIA**: For weather data.\
--   **StgoHOT**: Rasters at three moments of a summer day in 2024.\
+-   **Google Earth Engine (GEE)**: For satellite imagery (Landsat and Sentinel)
+-   **Agrometeorologia INIA**: For weather data
+-   **StgoHOT**: Rasters at three moments of a summer day in 2024 (January 20th 2024: 6-7 am / 3 - 4 pm / 7 - 8 pm) 
 
 ### **Programming and data analysis rameworks**
 
--   **R**: Primary language for data processing.\
+-   **R**: Primary language for data processing
 -   Main libraries:
-    -   **Tidyverse**: Data processing.\
-    -   **Terra**: Geospatial data processing.\
+    -   **Tidyverse**: Data processing
+    -   **Terra**: Geospatial data processing
 
 ------------------------------------------------------------------------
 
@@ -53,48 +53,48 @@ Urban heat islands (UHI) raise air and soil temperatures in cities, despite soil
 ### **1. Data Collection**
 
 -   **Satellite Data**: Use GEE to access Landsat/Sentinel:
-    -   Land Surface Temperature (LST).\
-    -   NDVI (Normalized Difference Vegetation Index).\
--   **Weather Data**: Collect temperature, humidity, and wind speed data.\
+    -   Land Surface Temperature (LST)
+    -   NDVI (Normalized Difference Vegetation Index)
+-   **Weather Data**: Collect temperature, humidity, and wind speed data
 
 ------------------------------------------------------------------------
 
 ### **2. Data Preprocessing**
 
--   **Step 1**: Ensure all datasets align to the same coordinate reference system (CRS).\
--   **Data Cleaning**: Remove noisy or missing data.\
+-   **Step 1**: Ensure all datasets align to the same coordinate reference system (CRS)
+-   **Data Cleaning**: Remove noisy or missing data
 
 ------------------------------------------------------------------------
 
 ### **3. Data Analysis**
 
--   **Comparison**: Develop a data framework for comparing the three approaches for UHI (StgoHOT, Sentinel and Landsat).\
--   **StgoHOT temperatu**: Develop a data framework for comparing the three approaches for UHI (StgoHOT, Sentinel and Landsat).\
--   Output: Urban greenspaces under local UHI.\
+-   **Comparison**: Develop a data framework for comparing the three approaches for UHI (StgoHOT, Sentinel and Landsat)
+-   **StgoHOT temperatu**: Develop a data framework for comparing the three approaches for UHI (StgoHOT, Sentinel and Landsat)
+-   Output: Urban greenspaces under local UHI
 
 ------------------------------------------------------------------------
 
 ### **4. Comparison bewteen Stgo HOT/Sentinel/Landstat**
 
--   **Comparison**: Develop a data framework for comparing the three approaches for UHI (StgoHOT, Sentinel and Landsat).\
--   **Discussion**: Describe potential under or subestimation of UHI based on StgoHOT, Sentinel and Landsat.\
+-   **Comparison**: Develop a data framework for comparing the three approaches for UHI (StgoHOT, Sentinel and Landsat)
+-   **Discussion**: Describe potential under or subestimation of UHI based on StgoHOT, Sentinel and Landsat
 
 ------------------------------------------------------------------------
 
 ### **5. Visualization**
 
 -   **Current UHI Map**:
-    -   Interactive maps showing temperature using **Leaflet.js**.\
+    -   Interactive maps showing temperature using **Leaflet.js**
 -   **Histogramas and temperature profile of urban greenspaces**:
-    -   Heatmaps of urban greenspaces at different time.\
+    -   Heatmaps of urban greenspaces at different time
 
 
 ------------------------------------------------------------------------
 
 ### **6. Dashboard Development**
 
-1. **Interactive Maps**: Show StgoHOT temperatures with zoom and pan functionality.\
-2. **Insights Panel**: Summarize key findings (e.g., average temperature increase, top hotspots).\
+1. **Interactive Maps**: Show StgoHOT temperatures with zoom and pan functionality
+2. **Insights Panel**: Summarize key findings (e.g., average temperature increase, top hotspots)
 3. **Export Options**: Enable users to download results in CSV or GeoJSON format.
 
 ------------------------------------------------------------------------
@@ -103,22 +103,22 @@ Urban heat islands (UHI) raise air and soil temperatures in cities, despite soil
 
 ### **1. Satellite Data Size**
 
--   **Challenge**: Satellite imagery can be large and computationally expensive to process.\
+-   **Challenge**: Satellite imagery can be large and computationally expensive to process
 -   **Solution**: Use GEE for cloud-based processing and only download the results.
 
 ------------------------------------------------------------------------
 
 ## **Expected Results**
 
-1.  **Result 1**: result 1.\
-2.  **Result 2**: result 2.\
+1.  **Result 1**: result 1
+2.  **Result 2**: result 2
 
 ------------------------------------------------------------------------
 
 ## **Impact**
 
--   **Urban Planners**: Design cities with better cooling strategies.\
--   **Governments**: Prioritize climate adaptation projects.\
+-   **Urban Planners**: Design cities with better cooling strategies
+-   **Governments**: Prioritize climate adaptation projects
 -   **Citizens**: Increase awareness of how urbanization impacts local climates.
 
 ------------------------------------------------------------------------
