@@ -31,6 +31,18 @@ Urban heat islands (UHI) raise air and soil temperatures in cities, despite soil
 
 ------------------------------------------------------------------------
 
+## **Satellite Context: NDVI Santiago 2024**
+
+This visualization provides a baseline of vegetation vigor across urban Santiago during the 2024 summer peak, serving as a reference for green space health and distribution.
+
+![Urban Santiago NDVI Map](./plots/map_ndvi_santiago.png)
+
+- **Data Source**: Landsat 8 & 9 (Collection 2 Level 2)
+- **Period**: January 2024
+- **Scale**: 30m resolution; values from 0.2 (Urban/Soil) to 0.8 (Dense Canopy).
+
+------------------------------------------------------------------------
+
 ## **Software and data sources**
 
 ### **Data Sources**
