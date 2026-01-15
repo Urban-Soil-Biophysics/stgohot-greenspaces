@@ -115,7 +115,16 @@ Urban heat islands (UHI) raise air and soil temperatures in cities, despite soil
 
 ------------------------------------------------------------------------
 
-## **Impact**
+## **Workflow for UGS Structural Characterization**
+This spcecific workflow targets the diferentiation of green space structures to prioritize soil sampling sites.
+
+- **Satellite Data**: Access **Dynamic World (10m)** probability bands (`trees` and `grass`) via GEE.
+- **Zonal Statistics**: Overlay MINVU park polygons with probability rasters using the **`exactextractr`** library in R.
+- **Metrics**: Compute weighted cover percentages for each class per polygon to categorize spaces by management (Woody vs. Herbaceous).
+- **Prioritization**: Define soil sampling priority zones based on structural characterization.
+
+------------------------------------------------------------------------
+## **Impact** 
 
 -   **Urban Planners**: Design cities with better cooling strategies.\
 -   **Governments**: Prioritize climate adaptation projects.\
