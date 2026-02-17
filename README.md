@@ -128,12 +128,25 @@ This visualization provides a baseline of vegetation vigor across urban Santiago
 ------------------------------------------------------------------------
 
 ## **Workflow for UGS Structural Characterization**
-This spcecific workflow targets the diferentiation of green space structures to prioritize soil sampling sites.
 
-- **Satellite Data**: Access **Dynamic World (10m)** probability bands (`trees` and `grass`) via GEE.
-- **Zonal Statistics**: Overlay MINVU park polygons with probability rasters using the **`exactextractr`** library in R.
-- **Metrics**: Compute weighted cover percentages for each class per polygon to categorize spaces by management (Woody vs. Herbaceous).
-- **Prioritization**: Define soil sampling priority zones based on structural characterization.
+This specific workflow targets the differentiation of green space structures to prioritize soil sampling sites.
+
+* **Woody Composition**: Strictly defined as the sum of **`trees` + `shrub_and_scrub`** probability bands from Dynamic World.
+* **Woody Ratio**: A structural metric calculated as $$Woody\_Ratio = \frac{Woody}{Woody + Grass}$$ to determine dominant management type.
+* **Prioritization Values**:
+    * **Urban Forest (Cool)**: Top 10 sites with a ratio **> 0.75**.
+    * **Open Grass (Hot)**: Bottom 10 sites representing the **relative minimums** of the dataset to ensure maximum contrast for soil analysis.
+
+### **Spatial Patterns**
+Regional hexagonal binning maps visualize management hotspots across the urban fabric:
+
+#### **Woody Density (Trees + Shrubs)**
+![Woody Hotspots](plots/04_Hex_Woody.png)
+*Map showing areas with high probability of woody biomass.*
+
+#### **Herbaceous Density (Grass)**
+![Grass Hotspots](plots/04_Hex_Grass.png)
+*Map showing areas with high probability of managed grass cover.*
 
 ------------------------------------------------------------------------
 ## **Impact** 
