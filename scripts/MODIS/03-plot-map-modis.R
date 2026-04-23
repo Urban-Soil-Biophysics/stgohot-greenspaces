@@ -10,34 +10,35 @@ library(ggspatial)
 library(ggmap)
 library(scales)
 library(ggrepel)
+library(gganimate)
 
-# Start from LST deciles LANDSAT ------------------------------------------
+# Start from stars object from script 01 ----------------------------------
 
-landsat_raster <- rast(landsat_stars)
-names(landsat_raster) <- "decile"
+modis_raster <- rast(modis_stars)
+names(modis_raster) <- "decile"
 
 # Now as polygon terra (faster for ggplot) --------------------------------
 
-landsat_poly <- terra::as.polygons(
-  landsat_raster,
+modis_poly <- terra::as.polygons(
+  modis_raster,
   values = TRUE,
   na.rm = TRUE,
   dissolve = TRUE
 ) %>% 
-  sf::st_as_sf() %>%
+sf::st_as_sf() %>%
   st_make_valid()
 
 # Create factors Q1 to Q10 ------------------------------------------------
 
-landsat_poly$decile <- factor(
-  landsat_poly$decile, 
+modis_poly$decile <- factor(
+  modis_poly$decile, 
   levels = 1:10,
   labels = paste0("D", 1:10)
 )
 
 # Get a background map from ggmaps ----------------------------------------
 
-bgd_stgo <- get_stadiamap(
+bg_stgo <- get_stadiamap(
   bbox = c(
     left = -70.95,
     bottom = -33.70,
@@ -48,42 +49,37 @@ bgd_stgo <- get_stadiamap(
   maptype = "stamen_terrain"
 ) # background of Santiago for plotting
 
-# Map LANDSAT  --------------------------------------------------------------
+# Map MODIS  --------------------------------------------------------------
 
-landsat_deciles_plot <- ggmap(bg_stgo) +
-  geom_sf(
-    data = landsat_poly,
-    aes(fill = decile),
-    color = NA,
-    alpha = 0.5,
-    inherit.aes = FALSE
+ggmap(bg_stgo) +
+  geom_sf(data = modis_poly,
+          aes(fill = decile),
+          color = NA,
+          alpha = 0.5,
+          inherit.aes = FALSE) +
+  scale_fill_viridis_d(
+    option    = "magma",
+    name      = "LST deciles",
+    drop      = FALSE,
+    na.translate = FALSE
   ) +
-  scale_fill_viridis_d(option    = "magma",
-                       name      = "LST deciles",
-                       drop      = FALSE,
-                       na.translate = FALSE) +
   coord_sf(expand = FALSE) +
   theme_minimal(base_size = 12) +
   annotation_north_arrow(location = "tl",
                          which_north = "true",
                          style = north_arrow_fancy_orienteering) +
   annotation_scale(location = "bl", width_hint = 0.2) +
-  labs(x = NULL, y = NULL, title = "Landsat January 20th 2024")
+  labs(x = NULL, y = NULL, title = "MODIS January 20th 2024")
+
 
 # ggsave ------------------------------------------------------------------
 
-ggsave(
-  "outputs/LANDSAT/landsat-deciles.tiff",
-  landsat_deciles_plot,
-  width = 6,
-  height = 4,
-  dpi = 300
-)
+ggsave("outputs/MODIS/modis-deciles.tiff", width = 6, height = 4, dpi = 300)
 
 # Ggplot polygons with categories -----------------------------------------
 # First, got my analysis to sf
-intercept_landsat_sf <-
-  intercept_landsat %>%
+intercept_modis_sf <-
+  intercept_modis %>%
   group_by(park_id, name, greenspace_type, area, deciles_label) %>%
   summarise(geometry = first(geometry),
             .groups = "drop") %>%
@@ -91,7 +87,7 @@ intercept_landsat_sf <-
 
 # Then I set an order for deciles -----------------------------------------
 
-labs_order_landsat <- intercept_landsat %>%
+labs_order_modis <- intercept_modis %>%
   distinct(deciles_label) %>%
   filter(!str_detect(deciles_label, "Q0")) %>% 
   mutate(
@@ -105,10 +101,10 @@ labs_order_landsat <- intercept_landsat %>%
 
 # Map of UGS and deciles ------------------------------------------------
 
-ggplot() + 
+ggplot() +
   geom_sf(
-    data = intercept_landsat_sf %>%
-      mutate(deciles_label = factor(deciles_label, levels = labs_order_landsat)),
+    data = intercept_modis_sf %>%
+      mutate(deciles_label = factor(deciles_label, levels = labs_order_modis)),
     inherit.aes = FALSE,
     aes(fill = deciles_label),
     color = "darkgreen",
@@ -122,17 +118,18 @@ ggplot() +
                          which_north = "true",
                          style = north_arrow_fancy_orienteering) +
   annotation_scale(location = "bl", width_hint = 0.2) +
-  labs(x = NULL, y = NULL, title = "Landsat January 20th 2024")
+  labs(x = NULL, y = NULL, title = "MODIS January 20th 2024")
 
 
 # gganimate ---------------------------------------------------------------
 
-gif_landsat <- intercept_landsat_sf %>%
-  mutate(deciles_label = factor(deciles_label, levels = labs_order_landsat)) %>% 
+# state new column for each decile
+gif_modis <- intercept_modis_sf %>%
+  mutate(deciles_label = factor(deciles_label, levels = labs_order_modis)) %>% 
   mutate(state = deciles_label)
 
-gif_landsat_plot <- ggplot() +
-  geom_sf(data = gif_landsat, aes(fill = deciles_label),
+gif_modis_plot <- ggplot() +
+  geom_sf(data = gif_modis, aes(fill = deciles_label),
           color = "darkgreen", alpha = 0.7, linewidth = 0.15,
           show.legend = TRUE) +
   scale_fill_viridis_d(option = "magma", na.translate = FALSE,
@@ -143,7 +140,7 @@ gif_landsat_plot <- ggplot() +
   coord_sf() +
   labs(
     x = NULL, y = NULL,
-    title = "LANDSAT"
+    title = "MODIS"
   ) +
   theme_minimal(base_size = 12) +
   theme(legend.position = "right") +
@@ -152,7 +149,6 @@ gif_landsat_plot <- ggplot() +
 
 # save gif ----------------------------------------------------------------
 
-animate(gif_landsat_plot, nframes = length(labs_order_landsat) * 8, fps = 8,
+animate(gif_modis_plot, nframes = length(labs_order_modis) * 8, fps = 8,
         width = 900, height = 650, res = 120)
-anim_save("outputs/LANDSAT/landstat-animation-deciles.gif")
-
+anim_save("outputs/modis/modis-animation-deciles.gif")
