@@ -26,14 +26,24 @@ start_date <- "2024-01-01"
 end_date   <- "2024-01-31"
 
 # ROI (Region of Interest) ------------------------------------------------
-# This remains the same
-bbox <- c(-70.85, -33.65, -70.45, -33.30) 
 
-roi <- ee$Geometry$Rectangle(
-  coords   = bbox,
-  proj     = "EPSG:4326",
-  geodesic = FALSE
-)
+# Define clip -------------------------------------------------------------
+stgohot_raster <- rast("data/stgo-hot/santiago-chile_am_temp_c.tif")
+crs(stgohot_raster) # EPSG:32719 - WGS 84 / UTM 19S
+
+# Clip according StgoHOT --------------------------------------------------
+# First load any Stgohot raster and create a mask/footprint as polygon 
+stgohot_true <-
+  mask(!is.na(stgohot_raster), !is.na(stgohot_raster), maskvalues = 0)
+
+# Get polygon
+stgohot_poly <- as.polygons(stgohot_true, values = FALSE) %>%
+  st_as_sf() %>%
+  st_transform(4326)
+
+# Transform to format ee and create geometry object
+stgohot_poly_gee  <- sf_as_ee(stgohot_poly)
+stgohot_poly_geom <- stgohot_poly_gee$geometry()   
 
 # Get Landsat 8 -----------------------------------------------------------
 
@@ -59,9 +69,11 @@ maskL8sr <- function(image) {
 # Call to the Landsat 8 Image Collection
 landsat_stgo_collection <-
   ee$ImageCollection("LANDSAT/LC08/C02/T1_L2")$
-  filterBounds(roi)$
+  filterBounds(stgohot_poly_geom)$
   filterDate(start_date, end_date)$
-  map(ee_utils_pyfunc(maskL8sr)) # Apply the cloud masking function
+  map(ee_utils_pyfunc(function(img) {
+    maskL8sr(img)$clip(stgohot_poly_geom)  
+  }))
 
 # Selection of the clearest image
 # Instead of a mosaic, we sort by the cloud cover property and select the first one.
@@ -82,35 +94,39 @@ lst_celcius_landsat <- img_landsat_stgo$
   rename("LST_Day_C")
 
 # Get min and max for split quintiles -------------------------------------
-minmax <- lst_celcius_landsat$reduceRegion(
+minmax_landsat <- lst_celcius_landsat$reduceRegion(
   reducer    = ee$Reducer$minMax(),
-  geometry   = roi,
+  geometry   = stgohot_poly_geom,
   scale      = 30, 
   bestEffort = TRUE
 )
 
-mn <- ee$Number(minmax$get("LST_Day_C_min"))
-mx <- ee$Number(minmax$get("LST_Day_C_max"))
-bw <- mx$subtract(mn)$divide(5)
+mn_landsat <- ee$Number(minmax_landsat$get("LST_Day_C_min"))
+mx_landsat <- ee$Number(minmax_landsat$get("LST_Day_C_max"))
+bw_landsat <- mx_landsat$subtract(mn_landsat)$divide(10)
 
-lst_celcius_quintiles_landsat <- ee$Image(
+landstat_deciles <- ee$Image(
   lst_celcius_landsat$expression(
     "floor((b(0) - mn) / bw) + 1",
-    list(mn = mn, bw = bw)
+    list(mn = mn_landsat, bw = bw_landsat)
   )
-)$toInt()$clamp(1, 5)$rename("LST_quintiles_LANDSAT")  # Final band name
+)$toInt()$clamp(1, 10)$rename("LST_quintiles_LANDSAT")  # Final band name
 
 # EarthEngine Object to R --------------------------------------------------
 # Download the GEE object to your local R session.
 # We change the final object name to avoid confusion with modis.
 
-lst_quint_stars_landsat <- ee_as_stars(
-  image  = lst_celcius_quintiles_landsat,
-  region = roi,
+landsat_stars <- ee_as_stars(
+  image  = landstat_deciles$clip(stgohot_poly_geom),
+  region = stgohot_poly_geom,
   scale  = 30, 
   crs    = "EPSG:4326",
   via    = "drive" 
 )
 
-# Print the object to verify
-print(lst_quint_stars_landsat)
+
+# Check -------------------------------------------------------------------
+
+check <- rast(landsat_stars)
+check[check == 0] <- NA  
+plot(check, col = viridis(10))
