@@ -202,5 +202,5 @@ All GEE scripts source `scripts/00_gee_init.R` which handles session re-initiali
 
 ## Citation
 
-Sara Acevedo · Urban Soil Biophysics Lab · CEDEUS / PUC Chile  
+Sara Acevedo / Agustín Coddou · Urban Soil Biophysics Lab · CEDEUS / PUC Chile  
 README structure inspired by [UHI-Detector](https://github.com/isatyamks/UHI-Detector) by Satyam Kumar.
