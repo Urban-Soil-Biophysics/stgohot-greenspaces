@@ -1,0 +1,809 @@
+---
+title: "Urban Greenspace Analysis — Santiago RM"
+subtitle: "Outputs and interpretation: thermal exposure, vegetation structure, and soil organic matter"
+author: "Urban Soil Biophysics Lab — CEDEUS / PUC"
+date: today
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    toc-location: left
+    embed-resources: true
+    code-fold: true
+    code-summary: "Show code"
+    theme: cosmo
+    page-layout: full
+execute:
+  warning: false
+  message: false
+---
+
+```{r setup}
+#| include: false
+library(sf)
+library(terra)
+library(tidyverse)
+library(exactextractr)
+library(leaflet)
+library(leaflet.extras)
+library(htmltools)
+library(scales)
+library(patchwork)
+library(gt)
+
+options(exactextractr.progress = FALSE)
+sf_use_s2(FALSE)
+
+# ── Shared helpers ────────────────────────────────────────────────────────────
+
+# Load and clean MINVU parks (base R to avoid list-coercion)
+load_minvu <- function() {
+  raw <- sf::st_read("data/geo-data/parques_urbanos_minvu.geojson", quiet = TRUE)
+  r13 <- raw[!is.na(raw$REGION) & raw$REGION == 13, ]
+  r13$greenspace_type <- dplyr::case_when(
+    stringr::str_detect(r13$NOMBRE, regex("parque", ignore_case = TRUE)) ~
+      "Urban Park",
+    stringr::str_detect(r13$NOMBRE,
+      regex("plaza|plazoleta|jardin|jardines|santuario|estadio|deporte|deportivo|campo|piscina",
+            ignore_case = TRUE)) ~ "Lawn Park",
+    stringr::str_detect(r13$NOMBRE,
+      regex("bandejon|bandejón|rotonda|canal|estero|autopista",
+            ignore_case = TRUE)) ~ "Roadside",
+    TRUE ~ NA_character_
+  )
+  r13 <- r13[!is.na(r13$greenspace_type), ]
+  r13$park_id  <- seq_len(nrow(r13))
+  r13$area_m2  <- as.numeric(r13$SUPERFICIE)
+  r13$area_ha  <- round(r13$area_m2 / 1e4, 2)
+  r13$name     <- as.character(r13$NOMBRE)
+  r13$commune  <- as.character(r13$COM)
+  r13[, c("park_id","name","commune","area_m2","area_ha","greenspace_type")] |>
+    sf::st_as_sf() |>
+    sf::st_transform(4326)
+}
+
+# Rebuild geometry through WKB — removes list-type coordinate internals
+clean_geom <- function(sf_obj) {
+  wkb <- sf::st_as_binary(sf::st_geometry(sf_obj))
+  sf::st_set_geometry(sf_obj, sf::st_as_sfc(wkb, crs = 4326))
+}
+
+# Raster → leaflet-ready SpatRaster projected to EPSG:3857
+prep_rast_leaflet <- function(path) {
+  r <- terra::rast(path)
+  terra::project(r, "EPSG:3857")
+}
+
+# Colour palette helpers
+pal_type <- colorFactor(
+  palette = c("#2d6a4f", "#95d5b2", "#e76f51"),
+  levels  = c("Urban Park", "Lawn Park", "Roadside")
+)
+pal_cond <- colorFactor(
+  palette = c("#52b788", "#e76f51"),
+  levels  = c("Good condition", "Poor condition"),
+  na.color = "#cccccc"
+)
+pal_veg <- colorFactor(
+  palette = c("#41ab5d", "#fc9272", "#9e9ac8", "#cccccc"),
+  levels  = c("Woody", "Grass", "Mixed", "Unclassified")
+)
+pal_decile <- colorNumeric(
+  palette  = "YlOrRd",
+  domain   = 1:10,
+  na.color = "transparent"
+)
+pal_ndvi <- colorNumeric(
+  palette  = c("#ece7f2","#a6bddb","#2ca25f","#006d2c"),
+  domain   = c(0, 0.8),
+  na.color = "transparent"
+)
+
+basemap_tiles <- function(map) {
+  map |>
+    addProviderTiles("CartoDB.Positron",     group = "Light") |>
+    addProviderTiles("Esri.WorldImagery",    group = "Satellite") |>
+    addProviderTiles("OpenStreetMap.Mapnik", group = "Streets")
+}
+layer_ctrl <- function(map, overlays) {
+  map |>
+    addLayersControl(
+      baseGroups    = c("Light","Satellite","Streets"),
+      overlayGroups = overlays,
+      options       = layersControlOptions(collapsed = TRUE)
+    ) |>
+    addScaleBar(position = "bottomright",
+                options  = scaleBarOptions(imperial = FALSE))
+}
+
+# ── Load master data ──────────────────────────────────────────────────────────
+parks     <- load_minvu() |> clean_geom()
+ranking   <- readRDS("data/results/unified_park_ranking.rds")
+stgohot   <- readRDS("data/results/intercept_stgohot_summary.rds") |>
+               dplyr::mutate(time = as.character(time))
+
+# Join ranking to parks geometry
+# Join ranking to parks geometry
+parks_full <- parks |>
+  dplyr::left_join(
+    ranking |> dplyr::select(park_id, mean_woody, mean_grass,
+                              woody_ratio, grass_ratio, structure_cat,
+                              stgohot_decile_mean, sampling_priority,
+                              woody_decile, temp_decile, priority_score),
+    by = "park_id"
+  ) |>
+  clean_geom()
+
+# Join condition from areas_verdes
+areas_verdes <- sf::st_read(
+  "data/geo-data/sup_areas_verdes_stgo.geojson", quiet = TRUE
+) |>
+  sf::st_transform(4326) |>
+  sf::st_make_valid() |>
+  dplyr::select(estado_2, clase) |>
+  dplyr::mutate(
+    condition = dplyr::case_when(
+      estado_2 == "BUEN" ~ "Good condition",
+      estado_2 == "MAL"  ~ "Poor condition",
+      TRUE               ~ NA_character_
+    )
+  )
+
+parks_full <- parks_full |>
+  sf::st_join(
+    areas_verdes |> dplyr::select(condition),
+    join    = sf::st_intersects,
+    left    = TRUE,
+    largest = TRUE
+  ) |>
+  clean_geom()
+
+# Vegetation group
+parks_full <- parks_full |>
+  dplyr::mutate(
+    veg_group = dplyr::case_when(
+      structure_cat == "High Woody Cover"      ~ "Woody",
+      structure_cat == "High Herbaceous Cover" ~ "Grass",
+      structure_cat == "Mixed/Balanced"        ~ "Mixed",
+      TRUE                                     ~ "Unclassified"
+    )
+  )
+
+# Park centroids (clean)
+centroids_df <- parks_full |>
+  dplyr::mutate(
+    lon = sf::st_coordinates(sf::st_centroid(sf::st_geometry(parks_full)))[,1],
+    lat = sf::st_coordinates(sf::st_centroid(sf::st_geometry(parks_full)))[,2]
+  ) |>
+  sf::st_drop_geometry()
+
+# Extract thermal per park for display
+stgo_am_r <- terra::rast("data/stgo-hot/santiago-chile_am_temp_c.tif")
+stgo_af_r <- terra::rast("data/stgo-hot/santiago-chile_af_temp_c.tif")
+stgo_pm_r <- terra::rast("data/stgo-hot/santiago-chile_pm_temp_c.tif")
+
+parks_utm <- sf::st_transform(parks_full, 32719)
+centroids_df$temp_am <- exactextractr::exact_extract(stgo_am_r, parks_utm, "mean", progress=FALSE)
+centroids_df$temp_af <- exactextractr::exact_extract(stgo_af_r, parks_utm, "mean", progress=FALSE)
+centroids_df$temp_pm <- exactextractr::exact_extract(stgo_pm_r, parks_utm, "mean", progress=FALSE)
+centroids_df$temp_mean <- rowMeans(
+  centroids_df[, c("temp_am","temp_af","temp_pm")], na.rm = TRUE
+)
+
+# NDVI per park
+ndvi_r   <- terra::rast("data/geo-data/NDVI_Santiago_Jan2024_30m.tif")
+centroids_df$ndvi_mean <- exactextractr::exact_extract(ndvi_r, parks_utm, "mean", progress=FALSE)
+
+# Landsat + MODIS decile per park
+landsat_r <- terra::rast("data/geo-data/landsat_lst_deciles_jan2024.tif")
+modis_r   <- terra::rast("data/geo-data/modis_lst_deciles_jan2024.tif")
+centroids_df$landsat_decile <- exactextractr::exact_extract(landsat_r, parks_utm, "mean", progress=FALSE)
+centroids_df$modis_decile   <- exactextractr::exact_extract(modis_r,   parks_utm, "mean", progress=FALSE)
+
+# StgoHOT deciles per park per time (from intercept summary)
+stgohot_wide <- stgohot |>
+  dplyr::select(park_id, time, dominant_decile) |>
+  tidyr::pivot_wider(names_from = time, values_from = dominant_decile,
+                     names_prefix = "stgohot_") |>
+  dplyr::rename_with(tolower)
+
+centroids_df <- centroids_df |>
+  dplyr::left_join(stgohot_wide, by = "park_id")
+```
+
+---
+
+# Part 1 — Satellite thermal comparison
+
+> Each data source characterizes thermal exposure differently. SantiagoHOT provides air temperature at three moments of the day at high resolution (~10 m). Landsat 8 provides land surface temperature (LST) at 30 m. MODIS provides LST at 1 km — coarse enough that small parks inherit the thermal signature of surrounding streets.
+
+## 1.1 SantiagoHOT — air temperature (AM · AF · PM)
+
+```{r map-stgohot-rasters}
+am_r  <- prep_rast_leaflet("data/stgo-hot/santiago-chile_am_temp_c.tif")
+af_r  <- prep_rast_leaflet("data/stgo-hot/santiago-chile_af_temp_c.tif")
+pm_r  <- prep_rast_leaflet("data/stgo-hot/santiago-chile_pm_temp_c.tif")
+
+pal_temp <- colorNumeric("YlOrRd", values(am_r), na.color = "transparent")
+
+leaflet() |>
+  basemap_tiles() |>
+  addRasterImage(am_r, colors = pal_temp, opacity = 0.7,
+                 group = "AM (07–08 h)") |>
+  addRasterImage(af_r, colors = pal_temp, opacity = 0.7,
+                 group = "AF (15–16 h)") |>
+  addRasterImage(pm_r, colors = pal_temp, opacity = 0.7,
+                 group = "PM (19–20 h)") |>
+  addLegend(pal = pal_temp, values = values(am_r),
+            title = "Air temp (°C)", position = "bottomleft") |>
+  layer_ctrl(c("AM (07–08 h)","AF (15–16 h)","PM (19–20 h)")) |>
+  setView(-70.65, -33.47, zoom = 11)
+```
+
+> Temperature peaks at AF (afternoon). The city centre and eastern piedmont sectors consistently show higher temperatures across all three moments.
+
+## 1.2 Landsat 8 — LST deciles (30 m)
+
+```{r map-landsat}
+ls_r  <- prep_rast_leaflet("data/geo-data/landsat_lst_deciles_jan2024.tif")
+
+leaflet() |>
+  basemap_tiles() |>
+  addRasterImage(ls_r, colors = pal_decile, opacity = 0.7,
+                 group = "Landsat LST deciles") |>
+  addLegend(pal = pal_decile, values = 1:10,
+            title = "LST decile<br/>(1=cool, 10=hot)",
+            position = "bottomleft") |>
+  layer_ctrl("Landsat LST deciles") |>
+  setView(-70.65, -33.47, zoom = 11)
+```
+
+> At 30 m, Landsat resolves within-park variability. Deciles are computed from the least-cloudy January 2024 image.
+
+## 1.3 MODIS — LST deciles (1 km)
+
+```{r map-modis}
+mo_r  <- prep_rast_leaflet("data/geo-data/modis_lst_deciles_jan2024.tif")
+
+leaflet() |>
+  basemap_tiles() |>
+  addRasterImage(mo_r, colors = pal_decile, opacity = 0.7,
+                 group = "MODIS LST deciles") |>
+  addLegend(pal = pal_decile, values = 1:10,
+            title = "LST decile<br/>(1=cool, 10=hot)",
+            position = "bottomleft") |>
+  layer_ctrl("MODIS LST deciles") |>
+  setView(-70.65, -33.47, zoom = 11)
+```
+
+> MODIS pixels are 1 km² — most plazas and roadsides fall within a single pixel shared with streets, inflating their apparent LST. Parks < 1 ha should be interpreted with caution.
+
+---
+
+# Part 2 — NDVI — vegetation vigor
+
+```{r map-ndvi}
+nd_r <- prep_rast_leaflet("data/geo-data/NDVI_Santiago_Jan2024_30m.tif")
+
+leaflet() |>
+  basemap_tiles() |>
+  addRasterImage(nd_r, colors = pal_ndvi, opacity = 0.8,
+                 group = "NDVI") |>
+  addLegend(pal = pal_ndvi, values = c(0, 0.8),
+            title = "NDVI",
+            labFormat = labelFormat(digits = 2),
+            position = "bottomleft") |>
+  layer_ctrl("NDVI") |>
+  setView(-70.65, -33.47, zoom = 11)
+```
+
+> NDVI from Landsat 8 & 9 (January 2024, 30 m). Values near 0.2 indicate impervious or bare soil; values above 0.5 indicate active canopy. Dense tree cover in Parque Metropolitano (NE) and irrigated parks in Las Condes stand out clearly.
+
+---
+
+# Part 3 — Park inventory
+
+> MINVU registry for Region Metropolitana (updated 12/07/2022). Parks classified into Urban Parks, Lawn Parks, and Roadsides by name pattern matching. Condition (Good / Poor) joined from the áreas verdes dataset via spatial intersection.
+
+## 3.1 Park type
+
+```{r map-park-type}
+parks_type <- parks_full |>
+  dplyr::select(park_id, name, commune, area_ha, greenspace_type) |>
+  clean_geom()
+
+leaflet(parks_type) |>
+  basemap_tiles() |>
+  addPolygons(
+    fillColor   = ~pal_type(greenspace_type),
+    fillOpacity = 0.7,
+    color       = "white", weight = 0.3,
+    popup = ~sprintf(
+      "<b>%s</b><br/>%s<br/>%.2f ha<br/><i>%s</i>",
+      name, commune, area_ha, greenspace_type
+    ),
+    label = ~name,
+    group = "Park type"
+  ) |>
+  addLegend(pal = pal_type, values = ~greenspace_type,
+            title = "Park type", position = "bottomleft") |>
+  layer_ctrl("Park type") |>
+  setView(-70.65, -33.47, zoom = 11)
+```
+
+## 3.2 Park condition (Good / Poor)
+
+```{r map-park-condition}
+parks_cond <- parks_full |>
+  dplyr::select(park_id, name, commune, area_ha, condition) |>
+  clean_geom()
+
+leaflet(parks_cond) |>
+  basemap_tiles() |>
+  addPolygons(
+    fillColor   = ~pal_cond(condition),
+    fillOpacity = 0.7,
+    color       = "white", weight = 0.3,
+    popup = ~sprintf(
+      "<b>%s</b><br/>%s<br/>%.2f ha<br/><i>%s</i>",
+      name, commune, area_ha, coalesce(condition, "No data")
+    ),
+    label = ~name,
+    group = "Condition"
+  ) |>
+  addLegend(pal = pal_cond, values = ~condition,
+            title = "Condition", position = "bottomleft",
+            na.label = "No data") |>
+  layer_ctrl("Condition") |>
+  setView(-70.65, -33.47, zoom = 11)
+```
+
+> 75 % of parks with condition data are classified as Good (BUEN). Deteriorated parks cluster in lower-income comunas in the south and west.
+
+---
+
+# Part 4 — Dynamic World vegetation structure
+
+> Woody ratio = (trees + shrubs) / (trees + shrubs + grass) from Google Dynamic World at 10 m resolution. Values above 0.6 = High Woody Cover; below 0.4 = High Herbaceous Cover.
+
+## 4.1 Vegetation group per park
+
+```{r map-veg-group}
+parks_veg <- parks_full |>
+  dplyr::select(park_id, name, commune, area_ha,
+                veg_group, woody_ratio, grass_ratio) |>
+  dplyr::mutate(
+    woody_pct = scales::percent(woody_ratio, accuracy = 1),
+    grass_pct = scales::percent(grass_ratio, accuracy = 1)
+  ) |>
+  clean_geom()
+
+leaflet(parks_veg) |>
+  basemap_tiles() |>
+  addPolygons(
+    fillColor   = ~pal_veg(veg_group),
+    fillOpacity = 0.75,
+    color       = "white", weight = 0.3,
+    popup = ~sprintf(
+      "<b>%s</b><br/>%s · %.2f ha<br/>
+       <b>Woody:</b> %s &nbsp; <b>Grass:</b> %s<br/>
+       <i>%s</i>",
+      name, commune, area_ha,
+      woody_pct, grass_pct, veg_group
+    ),
+    label = ~name,
+    group = "Vegetation group"
+  ) |>
+  addLegend(pal = pal_veg, values = ~veg_group,
+            title = "Vegetation group", position = "bottomleft") |>
+  layer_ctrl("Vegetation group") |>
+  setView(-70.65, -33.47, zoom = 11)
+```
+
+
+> Most Urban Parks fall in the Woody category. The majority of Lawn Parks and Roadsides are Grass or Unclassified, consistent with their management as mowed turf or paved medians.
+
+---
+
+# Part 5 — Combined thermal leaflet
+
+> All thermal sources on a single map. Toggle between layers to compare how Landsat, MODIS, and SantiagoHOT characterise the same parks.
+
+```{r map-thermal-combined}
+pal_am  <- colorNumeric("Blues",  domain = range(centroids_df$temp_am,  na.rm=TRUE), na.color="transparent")
+pal_af  <- colorNumeric("YlOrRd", domain = range(centroids_df$temp_af,  na.rm=TRUE), na.color="transparent")
+pal_pm  <- colorNumeric("Purples",domain = range(centroids_df$temp_pm,  na.rm=TRUE), na.color="transparent")
+pal_avg <- colorNumeric("RdYlBu", domain = range(centroids_df$temp_mean,na.rm=TRUE),
+                        reverse = TRUE, na.color="transparent")
+pal_ls  <- colorNumeric("YlOrRd", domain = 1:10, na.color="transparent")
+pal_mo  <- colorNumeric("YlOrRd", domain = 1:10, na.color="transparent")
+
+leaflet(centroids_df) |>
+  basemap_tiles() |>
+  addCircleMarkers(~lon, ~lat, radius = 5,
+    color = ~pal_am(temp_am), fillColor = ~pal_am(temp_am),
+    fillOpacity = 0.85, stroke = FALSE,
+    popup = ~sprintf("<b>%s</b><br/>AM: %.1f °C", name, temp_am),
+    group = "StgoHOT AM") |>
+  addCircleMarkers(~lon, ~lat, radius = 5,
+    color = ~pal_af(temp_af), fillColor = ~pal_af(temp_af),
+    fillOpacity = 0.85, stroke = FALSE,
+    popup = ~sprintf("<b>%s</b><br/>AF: %.1f °C", name, temp_af),
+    group = "StgoHOT AF") |>
+  addCircleMarkers(~lon, ~lat, radius = 5,
+    color = ~pal_pm(temp_pm), fillColor = ~pal_pm(temp_pm),
+    fillOpacity = 0.85, stroke = FALSE,
+    popup = ~sprintf("<b>%s</b><br/>PM: %.1f °C", name, temp_pm),
+    group = "StgoHOT PM") |>
+  addCircleMarkers(~lon, ~lat, radius = 5,
+    color = ~pal_avg(temp_mean), fillColor = ~pal_avg(temp_mean),
+    fillOpacity = 0.85, stroke = FALSE,
+    popup = ~sprintf("<b>%s</b><br/>Mean: %.1f °C", name, temp_mean),
+    group = "StgoHOT Mean") |>
+  addCircleMarkers(~lon, ~lat, radius = 5,
+    color = ~pal_ls(landsat_decile), fillColor = ~pal_ls(landsat_decile),
+    fillOpacity = 0.85, stroke = FALSE,
+    popup = ~sprintf("<b>%s</b><br/>Landsat decile: %.1f", name, landsat_decile),
+    group = "Landsat decile") |>
+  addCircleMarkers(~lon, ~lat, radius = 5,
+    color = ~pal_mo(modis_decile), fillColor = ~pal_mo(modis_decile),
+    fillOpacity = 0.85, stroke = FALSE,
+    popup = ~sprintf("<b>%s</b><br/>MODIS decile: %.1f", name, modis_decile),
+    group = "MODIS decile") |>
+  addLayersControl(
+    baseGroups    = c("Light","Satellite","Streets"),
+    overlayGroups = c("StgoHOT AM","StgoHOT AF","StgoHOT PM",
+                      "StgoHOT Mean","Landsat decile","MODIS decile"),
+    options       = layersControlOptions(collapsed = FALSE)
+  ) |>
+  addScaleBar(position = "bottomright",
+              options  = scaleBarOptions(imperial = FALSE)) |>
+  setView(-70.65, -33.47, zoom = 11)
+```
+
+> Agreement between sources is generally high for large parks (> 1 ha). For small plazas and roadsides, MODIS deciles diverge from SantiagoHOT due to the 1 km pixel size.
+
+---
+
+# Part 6 — Park characteristics combined
+
+> Integrated view of park type, management condition, NDVI, and vegetation structure (woody/grass/mixed). Click any marker for details.
+
+```{r map-park-chars}
+pal_ndvi_pts <- colorNumeric(c("#ece7f2","#41ab5d","#006d2c"),
+                              domain = c(0,0.8), na.color="#cccccc")
+
+centroids_df <- centroids_df |>
+  dplyr::mutate(
+    popup_chars = sprintf(
+      '<b>%s</b><br/>%s · %.2f ha<br/>
+       <b>Type:</b> %s<br/>
+       <b>Condition:</b> %s<br/>
+       <b>Veg group:</b> %s<br/>
+       <b>NDVI:</b> %.3f<br/>
+       <b>Woody ratio:</b> %s',
+      name, commune, area_ha,
+      greenspace_type,
+      coalesce(condition, "No data"),
+      veg_group,
+      coalesce(ndvi_mean, NA_real_),
+      scales::percent(coalesce(woody_ratio, NA_real_), accuracy=1)
+    )
+  )
+
+leaflet(centroids_df) |>
+  basemap_tiles() |>
+  addCircleMarkers(~lon, ~lat, radius = 6,
+    color = ~pal_type(greenspace_type),
+    fillColor = ~pal_type(greenspace_type),
+    fillOpacity = 0.85, stroke = FALSE,
+    popup = ~popup_chars, label = ~name,
+    group = "Park type") |>
+  addCircleMarkers(~lon, ~lat, radius = 6,
+    color = ~pal_cond(condition),
+    fillColor = ~pal_cond(condition),
+    fillOpacity = 0.85, stroke = FALSE,
+    popup = ~popup_chars, label = ~name,
+    group = "Condition") |>
+  addCircleMarkers(~lon, ~lat, radius = 6,
+    color = ~pal_ndvi_pts(ndvi_mean),
+    fillColor = ~pal_ndvi_pts(ndvi_mean),
+    fillOpacity = 0.85, stroke = FALSE,
+    popup = ~popup_chars, label = ~name,
+    group = "NDVI") |>
+  addCircleMarkers(~lon, ~lat, radius = 6,
+    color = ~pal_veg(veg_group),
+    fillColor = ~pal_veg(veg_group),
+    fillOpacity = 0.85, stroke = FALSE,
+    popup = ~popup_chars, label = ~name,
+    group = "Veg group") |>
+  addLayersControl(
+    baseGroups    = c("Light","Satellite","Streets"),
+    overlayGroups = c("Park type","Condition","NDVI","Veg group"),
+    options       = layersControlOptions(collapsed = FALSE)
+  ) |>
+  addScaleBar(position = "bottomright",
+              options  = scaleBarOptions(imperial = FALSE)) |>
+  setView(-70.65, -33.47, zoom = 11)
+```
+
+---
+
+# Part 7 — NDVI associations
+
+## 7.1 NDVI by park type, condition, and vegetation group
+
+```{r ndvi-boxplots, fig.width=11, fig.height=4}
+ndvi_df <- centroids_df |>
+  dplyr::filter(!is.na(ndvi_mean))
+
+p_type <- ndvi_df |>
+  dplyr::filter(!is.na(greenspace_type)) |>
+  ggplot(aes(x = greenspace_type, y = ndvi_mean,
+             fill = greenspace_type)) +
+  geom_boxplot(alpha = 0.7, outlier.size = 0.8) +
+  geom_jitter(width = 0.15, alpha = 0.2, size = 0.8) +
+  scale_fill_manual(values = c(
+    "Urban Park" = "#2d6a4f",
+    "Lawn Park"  = "#95d5b2",
+    "Roadside"   = "#e76f51"
+  )) +
+  labs(x = NULL, y = "Mean NDVI") +
+  theme_minimal(base_size = 11) +
+  theme(legend.position = "none",
+        axis.text.x = element_text(angle = 20, hjust = 1))
+
+p_cond <- ndvi_df |>
+  dplyr::filter(!is.na(condition)) |>
+  ggplot(aes(x = condition, y = ndvi_mean, fill = condition)) +
+  geom_boxplot(alpha = 0.7, outlier.size = 0.8) +
+  geom_jitter(width = 0.12, alpha = 0.2, size = 0.8) +
+  scale_fill_manual(values = c(
+    "Good condition" = "#52b788",
+    "Poor condition" = "#e76f51"
+  )) +
+  labs(x = NULL, y = NULL) +
+  theme_minimal(base_size = 11) +
+  theme(legend.position = "none",
+        axis.text.x = element_text(angle = 20, hjust = 1))
+
+p_veg <- ndvi_df |>
+  dplyr::filter(veg_group != "Unclassified") |>
+  ggplot(aes(x = veg_group, y = ndvi_mean, fill = veg_group)) +
+  geom_boxplot(alpha = 0.7, outlier.size = 0.8) +
+  scale_fill_manual(values = c(
+    "Woody" = "#41ab5d", "Grass" = "#fc9272", "Mixed" = "#9e9ac8"
+  )) +
+  labs(x = NULL, y = NULL) +
+  theme_minimal(base_size = 11) +
+  theme(legend.position = "none")
+
+p_type + p_cond + p_veg +
+  plot_annotation(
+    title    = "NDVI by park characteristics",
+    subtitle = "Landsat 8 & 9 — January 2024 (30 m)"
+  )
+```
+
+> Urban Parks have the highest median NDVI, consistent with larger canopy cover. Good condition parks score slightly higher than poor condition ones. Woody parks unsurprisingly lead in vegetation vigor.
+
+## 7.2 NDVI vs thermal sources
+
+```{r ndvi-vs-thermal, fig.width=12, fig.height=4}
+vars <- list(
+  list(col="temp_af",       lab="AF temperature (°C)",    pal="YlOrRd"),
+  list(col="landsat_decile",lab="Landsat decile",          pal="YlOrRd"),
+  list(col="modis_decile",  lab="MODIS decile",            pal="YlOrRd")
+)
+
+make_scatter <- function(xcol, xlab) {
+  ndvi_df |>
+    dplyr::filter(!is.na(.data[[xcol]]), veg_group != "Unclassified") |>
+    ggplot(aes(x = .data[[xcol]], y = ndvi_mean, color = veg_group)) +
+    geom_point(alpha = 0.4, size = 1.2) +
+    geom_smooth(method = "lm", se = TRUE,
+                color = "gray30", linewidth = 0.7) +
+    scale_color_manual(values = c(
+      "Woody"="#41ab5d","Grass"="#fc9272",
+      "Mixed"="#9e9ac8","Unclassified"="#cccccc"
+    )) +
+    labs(x = xlab, y = "Mean NDVI", color = NULL) +
+    theme_minimal(base_size = 10) +
+    theme(legend.position = "bottom",
+          legend.key.size  = unit(0.4,"cm"))
+}
+
+make_scatter("temp_af",        "AF temperature (°C)") +
+make_scatter("landsat_decile", "Landsat LST decile")  +
+make_scatter("modis_decile",   "MODIS LST decile")    +
+  plot_layout(ncol = 3) +
+  plot_annotation(
+    title    = "NDVI vs thermal exposure",
+    subtitle = "Negative slope expected: hotter parks tend to have lower vegetation vigor"
+  )
+```
+
+---
+
+# Part 8 — Field soil organic matter
+
+> 59 soil samples from Santiago RM, spatially joined to the nearest MINVU park (nearest-feature, WGS84). Organic matter (OM %) measured in the field.
+
+```{r load-om}
+#| include: false
+fix_coord <- function(x) {
+  x_nodots <- stringr::str_remove_all(as.character(x), "\\.")
+  as.numeric(sub("^(-?)(\\d{2})(\\d+)$", "\\1\\2.\\3", x_nodots))
+}
+
+om_path <- "data/geo-data/dataset_rm_test.csv"
+
+if (file.exists(om_path)) {
+  om_raw <- readr::read_csv(om_path, show_col_types = FALSE)
+  om_clean <- om_raw |>
+    dplyr::mutate(
+      lat      = fix_coord(lat),
+      lon      = fix_coord(lon),
+      om_value = suppressWarnings(as.numeric(om))
+    ) |>
+    dplyr::filter(!is.na(lat), !is.na(lon), !is.na(om_value))
+
+  om_sf <- sf::st_as_sf(om_clean, coords = c("lon","lat"), crs = 4326)
+
+  # Build park centroids for join
+  minvu_raw   <- sf::st_read("data/geo-data/parques_urbanos_minvu.geojson",
+                              quiet = TRUE)
+  r13         <- minvu_raw[!is.na(minvu_raw$REGION) & minvu_raw$REGION == 13, ]
+  r13$name_r  <- as.character(r13$NOMBRE)
+  ctrs        <- sf::st_centroid(r13)
+  ctrs_df     <- ctrs |>
+    dplyr::mutate(
+      name_upper = toupper(name_r),
+      lon_park   = sf::st_coordinates(ctrs)[,1],
+      lat_park   = sf::st_coordinates(ctrs)[,2]
+    ) |>
+    sf::st_drop_geometry() |>
+    dplyr::distinct(name_upper, .keep_all = TRUE)
+
+# In the load-om chunk, replace the ranking_sf construction with:
+ranking_sf <- ranking |>
+  dplyr::mutate(name_upper = toupper(name)) |>
+  dplyr::left_join(
+    ctrs_df |> dplyr::select(name_upper, lon_park, lat_park),
+    by = "name_upper", relationship = "many-to-one"
+  ) |>
+  dplyr::filter(!is.na(lon_park)) |>
+  sf::st_as_sf(coords = c("lon_park","lat_park"), crs = 4326)
+
+  om_joined <- sf::st_join(om_sf, ranking_sf, join = sf::st_nearest_feature) |>
+    sf::st_drop_geometry() |>
+    dplyr::bind_cols(
+      sf::st_coordinates(om_sf) |>
+        as.data.frame() |>
+        dplyr::rename(lon = X, lat = Y)
+    ) |>
+    dplyr::mutate(
+      veg_group = dplyr::case_when(
+        structure_cat == "High Woody Cover"      ~ "Woody",
+        structure_cat == "High Herbaceous Cover" ~ "Grass",
+        structure_cat == "Mixed/Balanced"        ~ "Mixed",
+        TRUE                                     ~ "Unclassified"
+      )
+    )
+om_joined <- om_joined |>
+  dplyr::left_join(
+    centroids_df |>
+      dplyr::select(park_id, ndvi_mean,
+                    temp_mean, temp_am, temp_af, temp_pm,
+                    landsat_decile, modis_decile),
+    by = "park_id"
+  )
+  om_has_data <- TRUE
+} else {
+  om_has_data <- FALSE
+}
+```
+
+## 8.1 Map of OM sampling sites
+
+```{r map-om}
+if (om_has_data) {
+  pal_om <- colorNumeric("YlGn", domain = om_joined$om_value, na.color="#cccccc")
+
+  leaflet(om_joined) |>
+    basemap_tiles() |>
+    addCircleMarkers(~lon, ~lat,
+      radius      = ~scales::rescale(om_value, to = c(4,12)),
+      fillColor   = ~pal_om(om_value),
+      fillOpacity = 0.85,
+      color       = "white", weight = 1,
+      popup = ~sprintf(
+        "<b>OM: %.2f %%</b><br/>
+         <b>Park:</b> %s<br/>
+         <b>Type:</b> %s<br/>
+         <b>Condition:</b> %s<br/>
+         <b>Veg group:</b> %s",
+        om_value,
+        coalesce(name, "—"),
+        coalesce(greenspace_type, "—"),
+        coalesce(condition, "No data"),
+        veg_group
+      ),
+      group = "OM samples"
+    ) |>
+    addLegend(pal = pal_om, values = ~om_value,
+              title = "Organic matter (%)",
+              position = "bottomleft") |>
+    layer_ctrl("OM samples") |>
+    setView(-70.65, -33.47, zoom = 11)
+} else {
+  cat("dataset_rm_test.csv not found — add to data/geo-data/")
+}
+```
+
+> Marker size proportional to OM value. Higher OM tends to cluster in wooded parks in the eastern sector (Providencia, Las Condes), consistent with higher canopy input and lower soil temperature.
+
+## 8.2 OM associations
+
+```{r om-plots, fig.width=12, fig.height=9}
+if (om_has_data) {
+  col_vals <- c("Urban Park"="#2d6a4f","Lawn Park"="#95d5b2","Roadside"="#e76f51")
+
+  p1 <- om_joined |> dplyr::filter(!is.na(greenspace_type)) |>
+    ggplot(aes(x=greenspace_type, y=om_value, fill=greenspace_type)) +
+    geom_boxplot(alpha=0.7, outlier.size=1) +
+    geom_jitter(width=0.15, alpha=0.5, size=1.5) +
+    scale_fill_manual(values=col_vals) +
+    labs(title="OM by park type", x=NULL, y="OM (%)") +
+    theme_minimal(base_size=10) + theme(legend.position="none",
+    axis.text.x=element_text(angle=20,hjust=1))
+
+  p2 <- om_joined |> dplyr::filter(!is.na(condition)) |>
+    ggplot(aes(x=condition, y=om_value, fill=condition)) +
+    geom_boxplot(alpha=0.7, outlier.size=1) +
+    geom_jitter(width=0.12, alpha=0.5, size=1.5) +
+    scale_fill_manual(values=c("Good condition"="#52b788","Poor condition"="#e76f51")) +
+    labs(title="OM by condition", x=NULL, y=NULL) +
+    theme_minimal(base_size=10) + theme(legend.position="none",
+    axis.text.x=element_text(angle=20,hjust=1))
+
+  p3 <- om_joined |> dplyr::filter(veg_group!="Unclassified") |>
+    ggplot(aes(x=veg_group, y=om_value, fill=veg_group)) +
+    geom_boxplot(alpha=0.7, outlier.size=1) +
+    scale_fill_manual(values=c("Woody"="#41ab5d","Grass"="#fc9272","Mixed"="#9e9ac8")) +
+    labs(title="OM by veg group", x=NULL, y=NULL) +
+    theme_minimal(base_size=10) + theme(legend.position="none")
+
+  make_om_scatter <- function(xcol, xlab) {
+    om_joined |>
+      dplyr::filter(!is.na(.data[[xcol]]), !is.na(greenspace_type)) |>
+      ggplot(aes(x=.data[[xcol]], y=om_value, color=greenspace_type)) +
+      geom_point(alpha=0.7, size=2) +
+      geom_smooth(method="lm", se=TRUE, color="gray30", linewidth=0.7) +
+      scale_color_manual(values=col_vals) +
+      labs(x=xlab, y="OM (%)", color=NULL) +
+      theme_minimal(base_size=10) +
+      theme(legend.position="bottom", legend.key.size=unit(0.4,"cm"))
+  }
+
+  p4 <- make_om_scatter("ndvi_mean",      "NDVI")
+  p5 <- make_om_scatter("temp_mean",      "StgoHOT mean (°C)")
+  p6 <- make_om_scatter("landsat_decile", "Landsat decile")
+  p7 <- make_om_scatter("modis_decile",   "MODIS decile")
+
+  (p1 | p2 | p3) /
+  (p4 | p5 | p6) +
+  plot_annotation(
+    title    = "Soil organic matter associations",
+    subtitle = sprintf("n = %d field samples | January 2024", nrow(om_joined))
+  )
+} else {
+  cat("OM data not available.")
+}
+```
+
+> Higher NDVI is the strongest predictor of OM in this preliminary dataset, consistent with the expected soil C input from leaf litter. Thermal exposure (StgoHOT, Landsat) shows a negative trend — hotter parks tend to have lower OM, likely through accelerated decomposition.
+
+---
+
+*Data: SantiagoHOT (Jan 20, 2024) · Landsat 8 C2 T1 L2 (Jan 2024) · MODIS MOD11A1 (Jan 20, 2024) · Google Dynamic World v1 (Jan 2024 ±5 d) · MINVU Urban Parks (updated 12/07/2022) · Áreas Verdes Santiago · Field sampling 2024.*

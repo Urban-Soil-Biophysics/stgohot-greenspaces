@@ -12,10 +12,8 @@ website:
     left:
       - href: index.qmd
         text: Map
-    right:
-      - icon: github
-        href: https://github.com/Urban-Soil-Biophysics/stgohot-greenspaces
-        aria-label: GitHub
+      - href: results.qmd      # ← add
+        text: Results
 
 format:
   html:
@@ -32,3 +30,4 @@ execute:
   warning: false
   message: false
   freeze: auto
+
