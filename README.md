@@ -31,6 +31,18 @@ Urban heat islands (UHI) raise air and soil temperatures in cities, despite soil
 
 ------------------------------------------------------------------------
 
+## **Satellite Context: NDVI Santiago 2024**
+
+This visualization provides a baseline of vegetation vigor across urban Santiago during the 2024 summer peak, serving as a reference for green space health and distribution.
+
+![Urban Santiago NDVI Map](./plots/map_ndvi_santiago.png)
+
+- **Data Source**: Landsat 8 & 9 (Collection 2 Level 2)
+- **Period**: January 2024
+- **Scale**: 30m resolution; values from 0.2 (Urban/Soil) to 0.8 (Dense Canopy).
+
+------------------------------------------------------------------------
+
 ## **Software and data sources**
 
 ### **Data Sources**
@@ -115,7 +127,29 @@ Urban heat islands (UHI) raise air and soil temperatures in cities, despite soil
 
 ------------------------------------------------------------------------
 
-## **Impact**
+## **Workflow for UGS Structural Characterization**
+
+This specific workflow targets the differentiation of green space structures to prioritize soil sampling sites.
+
+* **Woody Composition**: Strictly defined as the sum of **`trees` + `shrub_and_scrub`** probability bands from Dynamic World.
+* **Woody Ratio**: A structural metric calculated as $$Woody\_Ratio = \frac{Woody}{Woody + Grass}$$ to determine dominant management type.
+* **Prioritization Values**:
+    * **Urban Forest (Cool)**: Top 10 sites with a ratio **> 0.75**.
+    * **Open Grass (Hot)**: Bottom 10 sites representing the **relative minimums** of the dataset to ensure maximum contrast for soil analysis.
+
+### **Spatial Patterns**
+Regional hexagonal binning maps visualize management hotspots across the urban fabric:
+
+#### **Woody Density (Trees + Shrubs)**
+![Woody Hotspots](plots/04_Hex_Woody.png)
+*Map showing areas with high probability of woody biomass.*
+
+#### **Herbaceous Density (Grass)**
+![Grass Hotspots](plots/04_Hex_Grass.png)
+*Map showing areas with high probability of managed grass cover.*
+
+------------------------------------------------------------------------
+## **Impact** 
 
 -   **Urban Planners**: Design cities with better cooling strategies
 -   **Governments**: Prioritize climate adaptation projects
