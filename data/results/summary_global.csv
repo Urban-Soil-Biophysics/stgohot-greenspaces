@@ -1,0 +1,14 @@
+greenspace_type,sampling_priority,n,mean_area_ha,mean_woody,mean_temp_pm,mean_decile,pct_good,pct_poor
+Lawn Park,P1 — Forest + Hot,9,0.65,0.739,29.3,7,100,0
+Lawn Park,P2 — Grass + Hot,12,0.65,0.695,29,7,81.8,18.2
+Lawn Park,P3 — Forest + Cool,9,0.69,0.737,28.9,6.3,66.7,33.3
+Lawn Park,P4 — Grass + Cool,15,0.74,0.689,28.8,6.5,83.3,16.7
+Lawn Park,P5 — Intermediate,171,1.06,NA,29.2,6.9,75.7,24.3
+Roadside,P2 — Hot + Short,9,0.71,0.72,29.5,7,25,75
+Roadside,P4 — Cool + Short,1,0.66,0.693,28.4,6,0,100
+Roadside,P5 — Intermediate,48,2.85,NA,29.1,6.7,60.7,39.3
+Urban Park,P1 — Forest + Hot,1,0.36,0.733,29.3,7,100,0
+Urban Park,P2 — Grass + Hot,1,0.8,0.67,29.3,7,0,100
+Urban Park,P3 — Forest + Cool,5,0.78,0.754,28.9,6.4,33.3,66.7
+Urban Park,P4 — Grass + Cool,2,0.91,0.699,28.6,6,0,100
+Urban Park,P5 — Intermediate,269,6.77,NA,29.1,6.9,76.8,23.2

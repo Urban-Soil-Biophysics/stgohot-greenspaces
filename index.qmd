@@ -1,0 +1,662 @@
+---
+title: "Urban Greenspace Thermal Ranking — Santiago"
+subtitle: "All MINVU parks classified by vegetation structure and surface temperature (StgoHOT, summer 2024)"
+author: "Urban Soil Biophysics Lab — CEDEUS / PUC"
+date: today
+format:
+  html:
+    toc: true
+    toc-depth: 2
+    toc-location: left
+    embed-resources: true
+    code-fold: true
+    code-summary: "Show code"
+    theme: cosmo
+    page-layout: full
+execute:
+  warning: false
+  message: false
+---
+
+```{r setup}
+#| include: false
+library(sf)
+library(terra)
+library(tidyverse)
+library(exactextractr)
+library(leaflet)
+library(leaflet.extras)
+library(htmltools)
+library(scales)
+library(patchwork)
+library(gt)
+
+options(exactextractr.progress = FALSE)
+sf_use_s2(FALSE)
+```
+
+## Overview
+
+This document maps all urban greenspaces in the Santiago Metropolitan Region
+(MINVU registry) and ranks them by surface temperature extracted from the
+**SantiagoHOT** dataset — a high-resolution (10 m) thermal model covering
+three moments of a summer day in 2024: morning (AM · 07–08 h),
+afternoon (AF · 16–17 h), and evening (PM · 19–20 h).
+
+Parks are colour-coded by their dominant vegetation structure
+(**woody** vs **herbaceous/grass**) and temperature decile within each group.
+Priority sampling sites selected for field soil analysis are highlighted
+as circle markers. Renders on committed files only — no GEE credentials needed.
+
+> **Source code**: [Urban-Soil-Biophysics/stgohot-greenspaces](https://github.com/Urban-Soil-Biophysics/stgohot-greenspaces)
+
+---
+
+## 1 · Load and classify park polygons
+
+```{r load-parks}
+parks_raw <- st_read(
+  "data/geo-data/parques_urbanos_minvu.geojson",
+  quiet = TRUE
+)
+
+# Base R only — dplyr verbs cause list-coercion on this sf object
+parks_r13 <- parks_raw[
+  !is.na(parks_raw$REGION) & parks_raw$REGION == 13,
+]
+
+parks_r13$greenspace_type <- dplyr::case_when(
+  stringr::str_detect(parks_r13$NOMBRE,
+    regex("parque", ignore_case = TRUE)) ~ "Urban Park",
+  stringr::str_detect(parks_r13$NOMBRE,
+    regex("plaza|plazoleta|jardin|jardines|santuario|estadio|deporte|deportivo|campo|piscina",
+          ignore_case = TRUE)) ~ "Lawn Park",
+  stringr::str_detect(parks_r13$NOMBRE,
+    regex("bandejon|bandejón|rotonda|canal|estero|autopista",
+          ignore_case = TRUE)) ~ "Roadside",
+  TRUE ~ NA_character_
+)
+
+parks_r13 <- parks_r13[!is.na(parks_r13$greenspace_type), ]
+parks_r13$park_id <- seq_len(nrow(parks_r13))
+parks_r13$area_m2 <- as.numeric(parks_r13$SUPERFICIE)
+parks_r13$area_ha <- round(parks_r13$area_m2 / 1e4, 2)
+parks_r13$name    <- as.character(parks_r13$NOMBRE)
+parks_r13$commune <- as.character(parks_r13$COM)
+
+# Keep only atomic columns — drops all list columns from source geojson
+keep_cols <- c("park_id", "name", "commune",
+               "area_m2", "area_ha", "greenspace_type")
+parks_clean <- parks_r13[, keep_cols]
+
+# Rebuild geometry cleanly through WKB
+geom_wkb   <- sf::st_as_binary(sf::st_geometry(parks_clean))
+geom_clean <- sf::st_as_sfc(geom_wkb, crs = 4326)
+parks <- sf::st_set_geometry(
+  sf::st_drop_geometry(parks_clean),
+  geom_clean
+) |> sf::st_as_sf()
+
+sprintf("Parks loaded: %d | Types: %s",
+        nrow(parks),
+        paste(unique(parks$greenspace_type), collapse = ", "))
+```
+
+---
+
+## 2 · Extract StgoHOT surface temperatures
+
+```{r extract-temp}
+stgo_am <- rast("data/stgo-hot/santiago-chile_am_temp_c.tif")
+stgo_af <- rast("data/stgo-hot/santiago-chile_af_temp_c.tif")
+stgo_pm <- rast("data/stgo-hot/santiago-chile_pm_temp_c.tif")
+
+parks_utm <- sf::st_transform(parks, 32719)
+
+temp_am <- exact_extract(stgo_am, parks_utm, "mean", progress = FALSE)
+temp_af <- exact_extract(stgo_af, parks_utm, "mean", progress = FALSE)
+temp_pm <- exact_extract(stgo_pm, parks_utm, "mean", progress = FALSE)
+
+# Build as plain dataframe — avoid sf method dispatch issues
+parks_thermal_df <- sf::st_drop_geometry(parks_utm)
+parks_thermal_df$temp_am_c    <- temp_am
+parks_thermal_df$temp_af_c    <- temp_af
+parks_thermal_df$temp_pm_c    <- temp_pm
+parks_thermal_df$temp_range_c <- temp_af - temp_am
+
+has_temp   <- !is.na(parks_thermal_df$temp_af_c)
+thermal_df <- parks_thermal_df[has_temp, ]
+geom_therm <- geom_clean[has_temp]
+
+parks_thermal <- sf::st_set_geometry(thermal_df, geom_therm) |>
+  sf::st_as_sf() |>
+  sf::st_transform(4326)
+
+sprintf("Parks with temperature data: %d", nrow(parks_thermal))
+```
+
+---
+
+## 3 · Vegetation structure
+
+```{r vegetation}
+ranking_path <- "data/results/unified_park_ranking.rds"
+rds_path     <- "data/results/ugs_analysis_10m_utm.rds"
+csv_path     <- "data/results/FIELD_SAMPLING_FINAL_REPORT.csv"
+
+veg_cols <- c("mean_woody", "mean_grass", "woody_ratio", "grass_ratio",
+              "structure_cat", "stgohot_decile_mean", "condition",
+              "sampling_priority", "ndvi_mean", "ndvi_decile",
+              "woody_decile", "temp_decile", "priority_score")
+
+if (file.exists(ranking_path)) {
+  veg <- readRDS(ranking_path) |>
+    dplyr::select(park_id, dplyr::any_of(veg_cols))
+} else if (file.exists(rds_path)) {
+  veg <- readRDS(rds_path) |>
+    sf::st_drop_geometry() |>
+    dplyr::select(park_id, dplyr::any_of(veg_cols))
+} else {
+  veg <- tibble::tibble(park_id = thermal_df$park_id)
+}
+
+# Add missing columns as NA
+for (col in veg_cols) {
+  if (!col %in% names(veg)) veg[[col]] <- NA
+}
+
+# Plain dataframe join
+full_df <- dplyr::left_join(thermal_df, veg, by = "park_id")
+
+# Structural fallback
+full_df$structure_cat <- dplyr::coalesce(
+  full_df$structure_cat,
+  dplyr::case_when(
+    full_df$greenspace_type == "Lawn Park" ~ "High Herbaceous Cover",
+    full_df$greenspace_type == "Roadside"  ~ "High Herbaceous Cover",
+    TRUE                                   ~ NA_character_
+  )
+)
+
+sprintf("Parks with structure data: %d | unclassified: %d",
+        sum(!is.na(full_df$structure_cat)),
+        sum( is.na(full_df$structure_cat)))
+```
+
+---
+
+## 4 · Temperature ranking
+
+```{r ranking}
+csv_mgmt <- if (file.exists(csv_path)) {
+  readr::read_csv(csv_path, show_col_types = FALSE) |>
+    dplyr::select(park_id, management = Management)
+} else {
+  tibble::tibble(park_id = integer(), management = character())
+}
+
+ranked_df <- full_df |>
+  dplyr::left_join(csv_mgmt, by = "park_id") |>
+  dplyr::mutate(
+    veg_group = dplyr::case_when(
+      structure_cat == "High Woody Cover"      ~ "Woody",
+      structure_cat == "High Herbaceous Cover" ~ "Grass",
+      structure_cat == "Mixed/Balanced"        ~ "Mixed",
+      TRUE                                     ~ "Unclassified"
+    ),
+    temp_decile_map = dplyr::if_else(
+      veg_group != "Unclassified",
+      dplyr::ntile(temp_af_c, 10),
+      NA_integer_
+    ),
+    temp_label = dplyr::case_when(
+      temp_decile_map %in% 1:3  ~ "Cool",
+      temp_decile_map %in% 4:7  ~ "Moderate",
+      temp_decile_map %in% 8:10 ~ "Hot",
+      TRUE                      ~ NA_character_
+    ),
+    is_priority = !is.na(management)
+  )
+
+sprintf("ranked_df rows: %d", nrow(ranked_df))
+```
+
+---
+
+## 5 · Interactive map
+
+```{r palettes}
+#| include: false
+pal_woody <- colorNumeric(c("#c7e9b4","#41ab5d","#006d2c","#00441b"),
+                          domain = 1:10, na.color = "#cccccc")
+pal_grass <- colorNumeric(c("#fee5d9","#fc9272","#de2d26","#67000d"),
+                          domain = 1:10, na.color = "#cccccc")
+pal_mixed <- colorNumeric(c("#efedf5","#9e9ac8","#54278f"),
+                          domain = 1:10, na.color = "#cccccc")
+
+ranked_df <- ranked_df |>
+  dplyr::mutate(
+    fill_color = as.character(dplyr::case_when(
+      veg_group == "Woody" ~ pal_woody(temp_decile_map),
+      veg_group == "Grass" ~ pal_grass(temp_decile_map),
+      veg_group == "Mixed" ~ pal_mixed(temp_decile_map),
+      TRUE                 ~ "#cccccc"
+    ))
+  )
+```
+
+```{r popups}
+#| include: false
+make_popup <- function(name, commune, area_ha, type,
+                       veg_group, structure_cat,
+                       temp_am, temp_af, temp_pm, temp_range,
+                       decile, temp_label,
+                       woody_ratio, grass_ratio,
+                       ndvi_mean, condition, sampling_priority,
+                       is_priority, management) {
+
+  badge <- if (isTRUE(is_priority))
+    '<span style="background:#1a6b3a;color:#fff;padding:2px 7px;
+     border-radius:10px;font-size:11px;font-weight:bold;">
+     &#9733; Priority sampling site</span><br/>' else ""
+
+  veg_row <- if (!is.na(woody_ratio))
+    sprintf("<b>Woody:</b> %s &nbsp; <b>Grass:</b> %s<br/>",
+            scales::percent(woody_ratio, accuracy = 1),
+            scales::percent(grass_ratio, accuracy = 1)) else ""
+
+  ndvi_row <- if (!is.na(ndvi_mean))
+    sprintf("<b>NDVI:</b> %.3f<br/>", ndvi_mean) else ""
+
+  temp_row <- if (!is.na(temp_af))
+    sprintf("<b>AM:</b> %.1f &nbsp; <b>AF:</b> %.1f &nbsp; <b>PM:</b> %.1f °C<br/>
+             <b>Range:</b> %.1f °C<br/>",
+            temp_am, temp_af, temp_pm, temp_range) else "No temperature data"
+
+  dcol <- dplyr::case_when(
+    !is.na(temp_label) & temp_label == "Cool" ~ "#006d2c",
+    !is.na(temp_label) & temp_label == "Hot"  ~ "#de2d26",
+    TRUE ~ "#888"
+  )
+  dstr <- if (!is.na(decile)) sprintf("%d/10", as.integer(decile)) else "–"
+  cond <- if (!is.na(condition))
+    sprintf("<b>Condition:</b> %s<br/>", condition) else ""
+  rank <- if (!is.na(sampling_priority))
+    sprintf("<b>Priority:</b> %s<br/>", sampling_priority) else ""
+  mgmt <- if (!is.na(management))
+    sprintf("<b>Management:</b> %s<br/>", management) else ""
+
+  sprintf(
+    '<div style="font-family:sans-serif;font-size:13px;min-width:220px">
+      %s<b style="font-size:14px">%s</b><br/>
+      <span style="color:#777">%s &middot; %.2f ha &middot; %s</span>
+      <hr style="margin:5px 0"/>
+      <b>Structure:</b> %s <span style="color:#777">(%s)</span><br/>
+      %s%s
+      <hr style="margin:5px 0"/>%s
+      <b>Temp decile (AF):</b> <span style="color:%s">%s %s</span><br/>
+      %s%s%s
+    </div>',
+    badge, name, commune, area_ha, type,
+    coalesce(structure_cat, "Unknown"), veg_group,
+    veg_row, ndvi_row,
+    temp_row, dcol, dstr, coalesce(temp_label, ""),
+    cond, rank, mgmt
+  )
+}
+
+ranked_df <- ranked_df |>
+  dplyr::mutate(
+    popup_html = purrr::pmap_chr(
+      list(name, commune, area_ha, greenspace_type,
+           veg_group, structure_cat,
+           temp_am_c, temp_af_c, temp_pm_c, temp_range_c,
+           temp_decile_map, temp_label,
+           woody_ratio, grass_ratio,
+           ndvi_mean, condition, sampling_priority,
+           is_priority, management),
+      make_popup
+    )
+  )
+```
+
+```{r leaflet-map}
+# Centroid-based map — avoids expandLimitsBbox issues with MULTIPOLYGON
+coords <- sf::st_coordinates(
+  sf::st_centroid(sf::st_geometry(parks_thermal))
+)
+
+centroids <- ranked_df |>
+  dplyr::mutate(lon = coords[, 1], lat = coords[, 2])
+
+pal_map <- colorFactor(
+  palette = c("#41ab5d", "#fc9272", "#9e9ac8", "#cccccc"),
+  levels  = c("Woody", "Grass", "Mixed", "Unclassified")
+)
+
+leaflet(data = centroids) |>
+  addProviderTiles("CartoDB.Positron",     group = "Light (CartoDB)") |>
+  addProviderTiles("Esri.WorldImagery",    group = "Satellite (ESRI)") |>
+  addProviderTiles("OpenStreetMap.Mapnik", group = "OpenStreetMap") |>
+  addCircleMarkers(
+    lng         = ~lon,
+    lat         = ~lat,
+    radius      = ~dplyr::if_else(is_priority, 10, 6),
+    color       = ~dplyr::if_else(is_priority, "#fff", pal_map(veg_group)),
+    weight      = ~dplyr::if_else(is_priority, 2, 0.5),
+    fillColor   = ~pal_map(veg_group),
+    fillOpacity = 0.8,
+    popup       = ~popup_html,
+    label       = ~name
+  ) |>
+  addLegend(
+    position = "bottomleft",
+    colors   = c("#41ab5d", "#fc9272", "#9e9ac8", "#cccccc", "#1a6b3a"),
+    labels   = c("Woody", "Grass", "Mixed", "Unclassified", "★ Priority site"),
+    title    = "Vegetation group",
+    opacity  = 0.9
+  ) |>
+  addLayersControl(
+    baseGroups = c("Light (CartoDB)", "Satellite (ESRI)", "OpenStreetMap"),
+    options    = layersControlOptions(collapsed = FALSE)
+  ) |>
+  addScaleBar(position = "bottomright",
+              options  = scaleBarOptions(imperial = FALSE)) |>
+  setView(lng = -70.650, lat = -33.470, zoom = 11)
+```
+
+---
+
+## 6 · Summary table
+
+```{r summary-table}
+ranked_df |>
+  dplyr::filter(veg_group %in% c("Woody", "Grass")) |>
+  dplyr::arrange(veg_group, temp_decile_map) |>
+  dplyr::group_by(veg_group) |>
+  dplyr::slice(c(1:5, (dplyr::n() - 4):dplyr::n())) |>
+  dplyr::ungroup() |>
+  dplyr::select(
+    Group        = veg_group,
+    Name         = name,
+    Commune      = commune,
+    `Area (ha)`  = area_ha,
+    `AM (°C)`    = temp_am_c,
+    `AF (°C)`    = temp_af_c,
+    `PM (°C)`    = temp_pm_c,
+    `Range (°C)` = temp_range_c,
+    Decile       = temp_decile_map,
+    Rank         = temp_label,
+    Priority     = is_priority
+  ) |>
+  dplyr::mutate(
+    dplyr::across(where(is.double), \(x) round(x, 1)),
+    Priority = dplyr::if_else(Priority, "★", "")
+  ) |>
+  gt(groupname_col = "Group") |>
+  tab_header(
+    title    = "Extreme parks by temperature decile",
+    subtitle = "Top 5 coolest and 5 hottest per vegetation group (AF)"
+  ) |>
+  cols_label(Priority = "★") |>
+  tab_style(style     = cell_fill(color = "#e8f5e9"),
+            locations = cells_body(rows = Rank == "Cool")) |>
+  tab_style(style     = cell_fill(color = "#ffebee"),
+            locations = cells_body(rows = Rank == "Hot")) |>
+  tab_style(style     = cell_text(weight = "bold"),
+            locations = cells_body(rows = Priority == "★")) |>
+  tab_options(table.font.size = 13)
+```
+
+---
+
+## 7 · Temperature distribution by vegetation group
+
+```{r boxplot, fig.width=9, fig.height=5}
+ranked_df |>
+  dplyr::filter(veg_group %in% c("Woody", "Grass", "Mixed")) |>
+  tidyr::pivot_longer(
+    c(temp_am_c, temp_af_c, temp_pm_c),
+    names_to = "moment", values_to = "temp_c"
+  ) |>
+  dplyr::mutate(
+    moment = factor(moment,
+      levels = c("temp_am_c", "temp_af_c", "temp_pm_c"),
+      labels = c("Morning\n(07–08 h)",
+                 "Afternoon\n(16–17 h)",
+                 "Evening\n(19–20 h)"))
+  ) |>
+  ggplot(aes(x = veg_group, y = temp_c, fill = veg_group)) +
+  geom_boxplot(alpha = 0.7, outlier.size = 0.8, outlier.alpha = 0.4) +
+  facet_wrap(~moment) +
+  scale_fill_manual(
+    values = c(Woody = "#41ab5d", Grass = "#fc9272", Mixed = "#9e9ac8")
+  ) +
+  labs(title    = "Surface temperature by vegetation structure",
+       subtitle = "StgoHOT — all MINVU parks, Santiago RM, summer 2024",
+       x = NULL, y = "Mean surface temperature (°C)") +
+  theme_minimal(base_size = 12) +
+  theme(legend.position = "none",
+        strip.text = element_text(face = "bold"))
+```
+
+---
+
+## 8 · Sampling priority ranking
+
+```{r ranking-summary}
+if (file.exists("data/results/summary_global.csv")) {
+  readr::read_csv("data/results/summary_global.csv",
+                  show_col_types = FALSE) |>
+    gt() |>
+    tab_header(title    = "Global sampling priority summary",
+               subtitle = "By greenspace type and priority class") |>
+    tab_options(table.font.size = 12)
+} else {
+  ranked_df |>
+    dplyr::count(greenspace_type, temp_label) |>
+    tidyr::drop_na() |>
+    gt() |>
+    tab_header(title    = "Park count by vegetation group and temperature class",
+               subtitle = "Run 04_sample_sites.R for full priority ranking") |>
+    tab_options(table.font.size = 12)
+}
+```
+
+---
+
+## 9 · NDVI — vegetation vigor
+
+```{r ndvi-analysis, fig.width=10, fig.height=4}
+ndvi_path <- "data/geo-data/NDVI_Santiago_Jan2024_30m.tif"
+
+if (file.exists(ndvi_path)) {
+
+  ndvi_rast     <- terra::rast(ndvi_path)
+  parks_for_ndvi <- sf::st_transform(parks_thermal, 32719)
+  ndvi_vals      <- exact_extract(ndvi_rast, parks_for_ndvi, "mean",
+                                   progress = FALSE)
+
+  ndvi_df <- ranked_df |>
+    dplyr::mutate(ndvi_mean_calc = ndvi_vals) |>
+    dplyr::filter(!is.na(ndvi_mean_calc), veg_group != "Unclassified")
+
+  p_ndvi_type <- ndvi_df |>
+    dplyr::filter(!is.na(greenspace_type)) |>
+    ggplot(aes(x = greenspace_type, y = ndvi_mean_calc,
+               fill = greenspace_type)) +
+    geom_boxplot(alpha = 0.7, outlier.size = 0.8) +
+    geom_jitter(width = 0.15, alpha = 0.25, size = 1) +
+    scale_fill_manual(values = c(
+      "Urban Park" = "#2d6a4f",
+      "Lawn Park"  = "#95d5b2",
+      "Roadside"   = "#e76f51"
+    )) +
+    labs(title = "NDVI by park type",
+         x = NULL, y = "Mean NDVI") +
+    theme_minimal(base_size = 11) +
+    theme(legend.position = "none")
+
+  p_ndvi_veg <- ndvi_df |>
+    ggplot(aes(x = veg_group, y = ndvi_mean_calc, fill = veg_group)) +
+    geom_boxplot(alpha = 0.7, outlier.size = 0.8) +
+    geom_jitter(width = 0.15, alpha = 0.25, size = 1) +
+    scale_fill_manual(
+      values = c(Woody = "#41ab5d", Grass = "#fc9272", Mixed = "#9e9ac8")
+    ) +
+    labs(title = "NDVI by vegetation group",
+         subtitle = "Landsat 8 — January 2024 (30m)",
+         x = NULL, y = "Mean NDVI") +
+    theme_minimal(base_size = 11) +
+    theme(legend.position = "none")
+
+  p_ndvi_temp <- ndvi_df |>
+    dplyr::filter(!is.na(temp_af_c)) |>
+    ggplot(aes(x = ndvi_mean_calc, y = temp_af_c, color = veg_group)) +
+    geom_point(alpha = 0.4, size = 1.5) +
+    geom_smooth(method = "lm", se = TRUE,
+                color = "gray30", linewidth = 0.8) +
+    scale_color_manual(
+      values = c(Woody = "#41ab5d", Grass = "#fc9272", Mixed = "#9e9ac8")
+    ) +
+    labs(title = "NDVI vs afternoon temperature",
+         x = "Mean NDVI", y = "AF temperature (°C)",
+         color = NULL) +
+    theme_minimal(base_size = 11) +
+    theme(legend.position = "bottom")
+
+  p_ndvi_type + p_ndvi_veg + p_ndvi_temp +
+    plot_layout(ncol = 3) +
+    plot_annotation(
+      title    = "NDVI — vegetation vigor across Santiago greenspaces",
+      subtitle = "Landsat 8 & 9 Collection 2 Level 2 | January 2024 | 30m resolution"
+    )
+
+} else {
+  cat("NDVI raster not found — expected at:", ndvi_path)
+}
+```
+
+---
+
+## 10 · Soil organic matter — field data association
+
+```{r om-analysis, fig.width=10, fig.height=8}
+om_joined_path  <- "data/results/om_ranking_joined.csv"
+om_summary_path <- "data/results/om_ranking_summary.csv"
+
+if (file.exists(om_joined_path)) {
+
+  om_data <- readr::read_csv(om_joined_path, show_col_types = FALSE)
+
+  p_type <- om_data |>
+    dplyr::filter(!is.na(greenspace_type)) |>
+    ggplot(aes(x = greenspace_type, y = om_value,
+               fill = greenspace_type)) +
+    geom_boxplot(alpha = 0.7, outlier.size = 1) +
+    geom_jitter(width = 0.15, alpha = 0.4, size = 1.5) +
+    scale_fill_manual(values = c(
+      "Urban Park" = "#2d6a4f",
+      "Lawn Park"  = "#95d5b2",
+      "Roadside"   = "#e76f51"
+    )) +
+    labs(title = "Soil OM by park type",
+         x = NULL, y = "Organic matter (%)") +
+    theme_minimal(base_size = 11) +
+    theme(legend.position = "none")
+
+  p_woody <- om_data |>
+    dplyr::filter(!is.na(woody_ratio)) |>
+    ggplot(aes(x = woody_ratio, y = om_value,
+               color = greenspace_type)) +
+    geom_point(alpha = 0.7, size = 2) +
+    geom_smooth(method = "lm", se = TRUE,
+                color = "gray30", linewidth = 0.8) +
+    scale_color_manual(values = c(
+      "Urban Park" = "#2d6a4f",
+      "Lawn Park"  = "#95d5b2",
+      "Roadside"   = "#e76f51"
+    )) +
+    labs(title = "Soil OM ~ woody ratio",
+         x = "Woody ratio (0–1)", y = "Organic matter (%)",
+         color = NULL) +
+    theme_minimal(base_size = 11) +
+    theme(legend.position = "bottom")
+
+  p_temp <- om_data |>
+    dplyr::filter(!is.na(stgohot_decile_mean)) |>
+    ggplot(aes(x = stgohot_decile_mean, y = om_value,
+               color = greenspace_type)) +
+    geom_point(alpha = 0.7, size = 2) +
+    geom_smooth(method = "lm", se = TRUE,
+                color = "gray30", linewidth = 0.8) +
+    scale_x_continuous(breaks = 1:10) +
+    scale_color_manual(values = c(
+      "Urban Park" = "#2d6a4f",
+      "Lawn Park"  = "#95d5b2",
+      "Roadside"   = "#e76f51"
+    )) +
+    labs(title = "Soil OM ~ temperature decile",
+         x = "StgoHOT mean decile (1=cool, 10=hot)",
+         y = "Organic matter (%)", color = NULL) +
+    theme_minimal(base_size = 11) +
+    theme(legend.position = "bottom")
+
+  p_cond <- om_data |>
+    dplyr::filter(!is.na(condition)) |>
+    ggplot(aes(x = condition, y = om_value, fill = condition)) +
+    geom_boxplot(alpha = 0.7, outlier.size = 1) +
+    geom_jitter(width = 0.12, alpha = 0.4, size = 1.5) +
+    scale_fill_manual(values = c(
+      "Good condition" = "#52b788",
+      "Poor condition" = "#e76f51"
+    )) +
+    labs(title = "Soil OM by park condition",
+         x = NULL, y = "Organic matter (%)") +
+    theme_minimal(base_size = 11) +
+    theme(legend.position = "none")
+
+  (p_type + p_cond) / (p_woody + p_temp) +
+    plot_annotation(
+      title    = "Soil organic matter associations with park characteristics",
+      subtitle = sprintf(
+        "Field data: n = %d points | Spatially joined to nearest MINVU park",
+        nrow(om_data)
+      )
+    )
+
+} else {
+  cat("OM association file not found — run scripts/ranking/05_soil_om_association.R first.")
+}
+```
+
+```{r om-summary-table}
+if (file.exists(om_summary_path)) {
+  readr::read_csv(om_summary_path, show_col_types = FALSE) |>
+    gt() |>
+    tab_header(
+      title    = "Soil OM summary",
+      subtitle = "Mean, SD and median OM (%) by park type and priority class"
+    ) |>
+    tab_options(table.font.size = 12)
+}
+```
+
+---
+
+## Reproducibility notes
+
+| File | Source | Required |
+|---|---|---|
+| `data/geo-data/parques_urbanos_minvu.geojson` | Committed | ✅ |
+| `data/stgo-hot/santiago-chile_{am,af,pm}_temp_c.tif` | Committed | ✅ |
+| `data/results/FIELD_SAMPLING_FINAL_REPORT.csv` | Committed | ✅ |
+| `data/geo-data/NDVI_Santiago_Jan2024_30m.tif` | Committed | Optional |
+| `data/results/ugs_analysis_10m_utm.rds` | `03_zonal_statistics.R` | Optional |
+| `data/results/intercept_stgohot_summary.rds` | `02_intercept-stgohot-ugs.R` | Optional |
+| `data/results/unified_park_ranking.rds` | `04_sample_sites.R` | Optional |
+| `data/results/om_ranking_joined.csv` | `05_soil_om_association.R` | Optional |
+
+```r
+quarto::quarto_render("index.qmd")
+```

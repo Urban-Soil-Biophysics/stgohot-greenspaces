@@ -1,0 +1,19 @@
+condition,greenspace_type,sampling_priority,n,mean_woody,mean_temp_pm,mean_decile
+Good condition,Lawn Park,P1 — Forest + Hot,6,0.744,29.3,7
+Good condition,Lawn Park,P2 — Grass + Hot,11,0.698,29,7
+Good condition,Lawn Park,P3 — Forest + Cool,4,0.735,28.8,6.2
+Good condition,Lawn Park,P4 — Grass + Cool,12,0.692,29.2,6.8
+Good condition,Lawn Park,P5 — Intermediate,100,0.71,29.2,6.9
+Good condition,Urban Park,P1 — Forest + Hot,1,0.733,29.3,7
+Good condition,Urban Park,P3 — Forest + Cool,2,0.736,29.2,6.5
+Good condition,Urban Park,P4 — Grass + Cool,2,0.699,28.7,7
+Good condition,Urban Park,P5 — Intermediate,153,0.739,29.1,6.9
+Poor condition,Lawn Park,P1 — Forest + Hot,3,0.726,29.2,7
+Poor condition,Lawn Park,P2 — Grass + Hot,2,0.693,29.1,7
+Poor condition,Lawn Park,P3 — Forest + Cool,3,0.734,29.7,7
+Poor condition,Lawn Park,P4 — Grass + Cool,1,0.696,27.6,6
+Poor condition,Lawn Park,P5 — Intermediate,30,0.71,29.3,6.9
+Poor condition,Urban Park,P2 — Grass + Hot,1,0.67,29.3,7
+Poor condition,Urban Park,P3 — Forest + Cool,1,0.775,29.4,7
+Poor condition,Urban Park,P4 — Grass + Cool,1,0.701,28.2,6
+Poor condition,Urban Park,P5 — Intermediate,48,0.711,29.2,6.9

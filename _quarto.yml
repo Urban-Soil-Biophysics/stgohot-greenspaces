@@ -1,0 +1,34 @@
+project:
+  type: website
+  output-dir: docs
+
+website:
+  title: "stgohot-greenspaces"
+  description: "Urban greenspace thermal ranking — Santiago Metropolitan Region"
+  favicon: plots/map_ndvi_santiago.png
+  repo-url: https://github.com/Urban-Soil-Biophysics/stgohot-greenspaces
+  repo-actions: [edit, issue]
+  navbar:
+    left:
+      - href: index.qmd
+        text: Map
+    right:
+      - icon: github
+        href: https://github.com/Urban-Soil-Biophysics/stgohot-greenspaces
+        aria-label: GitHub
+
+format:
+  html:
+    theme: cosmo
+    toc: true
+    toc-depth: 2
+    toc-location: left
+    embed-resources: false
+    code-fold: true
+    code-summary: "Show code"
+    page-layout: full
+
+execute:
+  warning: false
+  message: false
+  freeze: auto
